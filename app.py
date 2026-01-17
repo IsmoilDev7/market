@@ -1,155 +1,141 @@
-# app.py
 import streamlit as st
 import pandas as pd
-import numpy as np
-import plotly.express as px
 from io import BytesIO
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-st.set_page_config(page_title="Zakaz va Sotuv Analiz", layout="wide")
-st.title("🛒 Zakaz va Sotuv Analiz Dashboard")
+# ==========================
+# Faylni o'qish funksiyasi
+# ==========================
+def load_file(uploaded_file):
+    if uploaded_file is None:
+        return None
+    try:
+        file_name = uploaded_file.name.lower()
+        if file_name.endswith('.xlsx'):
+            df = pd.read_excel(BytesIO(uploaded_file.read()), engine='openpyxl')
+        elif file_name.endswith('.xls'):
+            df = pd.read_excel(BytesIO(uploaded_file.read()), engine='xlrd')
+        elif file_name.endswith('.csv'):
+            df = pd.read_csv(BytesIO(uploaded_file.read()))
+        else:
+            st.error("Fayl formati noto‘g‘ri. Faqat .xlsx, .xls yoki .csv ruxsat etiladi.")
+            return None
+        return df
+    except Exception as e:
+        st.error(f"Faylni o'qishda xatolik: {e}")
+        return None
 
-# -----------------------------
-# 1️⃣ Excel fayllarni upload qilish
-# -----------------------------
-st.header("1️⃣ Excel fayllarni upload qiling")
+# ==========================
+# Streamlit UI
+# ==========================
+st.title("Zakaz va Sotuv/Qaytish Analizi")
 
-orders_file = st.file_uploader("Birinchi fayl: Zakazlar (orders)", type=['xlsx','xls'])
-sales_file = st.file_uploader("Ikkinchi fayl: Sotuv / Qaytish (sales/returns)", type=['xlsx','xls'])
+orders_file = st.file_uploader("Birinchi fayl: Zakazlar (orders)", type=['xlsx','xls','csv'])
+sales_file = st.file_uploader("Ikkinchi fayl: Sotuv/Qaytish (sales/returns)", type=['xlsx','xls','csv'])
 
 if orders_file and sales_file:
+    orders = load_file(orders_file)
+    sales = load_file(sales_file)
     
-    try:
-        # Faylni BytesIO orqali o'qish (openpyxl va xlrd support)
-        orders_bytes = BytesIO(orders_file.read())
-        sales_bytes = BytesIO(sales_file.read())
-        
-        # Excel fayllarni o'qish
-        orders = pd.read_excel(orders_bytes, engine='openpyxl' if orders_file.name.endswith('.xlsx') else 'xlrd')
-        sales = pd.read_excel(sales_bytes, engine='openpyxl' if sales_file.name.endswith('.xlsx') else 'xlrd')
+    if orders is not None and sales is not None:
+        st.success("Fayllar muvaffaqiyatli yuklandi!")
 
-        # -----------------------------
-        # 2️⃣ Ustunlarni tozalash va tiplarni o'rnatish
-        # -----------------------------
-        orders['Период'] = pd.to_datetime(orders['Период'], errors='coerce')
-        orders['Количество'] = pd.to_numeric(orders['Количество'], errors='coerce')
-        orders['Сумма'] = pd.to_numeric(orders['Сумма'].str.replace(',',''), errors='coerce')
-        
-        sales['Период'] = pd.to_datetime(sales['Период'], errors='coerce')
-        sales['Количество'] = pd.to_numeric(sales['Количество'], errors='coerce')
-        sales['Возрат количество'] = pd.to_numeric(sales['Возрат количество'], errors='coerce')
+        # ==========================
+        # Zakaz KPI larini hisoblash
+        # ==========================
+        st.subheader("📊 Umumiy KPI lar")
+
+        # Umumiy zakazlar miqdori
+        total_orders = orders['Количество'].sum()
+        st.write(f"Umumiy zakaz miqdori: {total_orders}")
+
+        # Kantragen bo'yicha zakaz
+        orders_by_client = orders.groupby('Контрагент')['Количество'].sum().reset_index()
+        st.write("Kantragen bo‘yicha zakazlar:")
+        st.dataframe(orders_by_client)
+
+        # Sotuv faylidan sotilgan va qaytganlar
         sales['Продажная сумма'] = pd.to_numeric(sales['Продажная сумма'], errors='coerce')
         sales['Возврат сумма'] = pd.to_numeric(sales['Возврат сумма'], errors='coerce')
+        total_sold = sales['Продажная сумма'].sum()
+        total_returned = sales['Возврат сумма'].sum()
+        st.write(f"Umumiy sotuv: {total_sold}")
+        st.write(f"Umumiy qaytgan: {total_returned}")
 
-        # -----------------------------
-        # 3️⃣ Sana filter
-        # -----------------------------
-        st.subheader("2️⃣ Sana bo'yicha filter")
+        # Zakazlar foizi
+        sold_percent = (total_sold / total_orders)*100 if total_orders>0 else 0
+        return_percent = (total_returned / total_orders)*100 if total_orders>0 else 0
+        st.write(f"Sotilgan foizi: {sold_percent:.2f}%")
+        st.write(f"Qaytgan foizi: {return_percent:.2f}%")
+
+        # ==========================
+        # Sana filteri
+        # ==========================
+        st.subheader("📅 Sana bo‘yicha filter")
+        orders['Период'] = pd.to_datetime(orders['Период'], errors='coerce')
+        sales['Период'] = pd.to_datetime(sales['Период'], errors='coerce')
+
         min_date = min(orders['Период'].min(), sales['Период'].min())
         max_date = max(orders['Период'].max(), sales['Период'].max())
-        start_date, end_date = st.date_input("Davrni tanlang:", [min_date, max_date])
 
-        orders_filtered = orders[(orders['Период'] >= pd.to_datetime(start_date)) &
-                                 (orders['Период'] <= pd.to_datetime(end_date))]
-        sales_filtered = sales[(sales['Период'] >= pd.to_datetime(start_date)) &
-                               (sales['Период'] <= pd.to_datetime(end_date))]
+        date_range = st.date_input("Sana oralig‘i:", [min_date, max_date])
 
-        # -----------------------------
-        # 4️⃣ KPI lar hisoblash
-        # -----------------------------
-        st.subheader("3️⃣ Umumiy KPI lar")
-        
-        total_orders_qty = orders_filtered['Количество'].sum()
-        total_orders_sum = orders_filtered['Сумма'].sum()
-        total_sales_qty = sales_filtered['Количество'].sum()
-        total_sales_sum = sales_filtered['Продажная сумма'].sum()
-        total_return_qty = sales_filtered['Возрат количество'].sum()
-        total_return_sum = sales_filtered['Возврат сумма'].sum()
-        
-        delivered_qty = total_sales_qty - total_return_qty
-        delivered_sum = total_sales_sum - total_return_sum
-        
-        sold_percent = (total_sales_qty / total_orders_qty) * 100 if total_orders_qty > 0 else 0
-        return_percent = (total_return_qty / total_orders_qty) * 100 if total_orders_qty > 0 else 0
-        
-        st.metric("📝 Umumiy zakaz miqdori", total_orders_qty)
-        st.metric("💰 Umumiy zakaz summasi", total_orders_sum)
-        st.metric("📦 Sotilgan miqdor", total_sales_qty)
-        st.metric("💵 Sotilgan summa", total_sales_sum)
-        st.metric("↩️ Qaytgan miqdor", total_return_qty)
-        st.metric("↩️ Qaytgan summa", total_return_sum)
-        st.metric("✅ Yetkazilgan miqdor", delivered_qty)
-        st.metric("✅ Yetkazilgan summa", delivered_sum)
-        st.metric("📊 Sotilgan foiz (%)", f"{sold_percent:.2f}%")
-        st.metric("📊 Qaytgan foiz (%)", f"{return_percent:.2f}%")
+        filtered_orders = orders[(orders['Период']>=pd.to_datetime(date_range[0])) & (orders['Период']<=pd.to_datetime(date_range[1]))]
+        filtered_sales = sales[(sales['Период']>=pd.to_datetime(date_range[0])) & (sales['Период']<=pd.to_datetime(date_range[1]))]
 
-        # -----------------------------
-        # 5️⃣ Haftalik trendlar
-        # -----------------------------
-        st.subheader("4️⃣ Haftalik trend (zakaz va qaytarish)")
-        
-        orders_filtered['Hafta_kuni'] = orders_filtered['Период'].dt.day_name()
-        sales_filtered['Hafta_kuni'] = sales_filtered['Период'].dt.day_name()
-        
-        weekly_orders = orders_filtered.groupby('Hafta_kuni')['Количество'].sum().reindex(
-            ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'])
-        weekly_returns = sales_filtered.groupby('Hafta_kuni')['Возрат количество'].sum().reindex(
-            ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'])
-        
-        fig_weekly = px.bar(x=weekly_orders.index, y=[weekly_orders.values, weekly_returns.values],
-                            labels={'x':'Hafta kuni', 'y':'Miqdor'}, 
-                            title="Hafta kunlari bo'yicha zakaz va qaytish",
-                            barmode='group')
-        st.plotly_chart(fig_weekly, use_container_width=True)
+        st.write(f"Zakazlar filtrlash: {filtered_orders.shape[0]} qator")
+        st.write(f"Sotuv/Qaytish filtrlash: {filtered_sales.shape[0]} qator")
 
-        # -----------------------------
-        # 6️⃣ Mahsulotlar bo'yicha analiz
-        # -----------------------------
-        st.subheader("5️⃣ Mahsulotlar bo'yicha batafsil analiz")
-        
-        product_summary = orders_filtered.groupby('Номенклатура').agg(
-            zakaz_qty=('Количество','sum'),
-            zakaz_sum=('Сумма','sum')
-        ).reset_index()
-        
-        sales_summary = sales_filtered.groupby('Номенклатура').agg(
-            sold_qty=('Количество','sum'),
-            sold_sum=('Продажная сумма','sum'),
-            return_qty=('Возрат количество','sum'),
-            return_sum=('Возврат сумма','sum')
-        ).reset_index()
-        
-        product_merged = pd.merge(product_summary, sales_summary, on='Номенклатура', how='left').fillna(0)
-        product_merged['delivered_qty'] = product_merged['sold_qty'] - product_merged['return_qty']
-        product_merged['delivered_sum'] = product_merged['sold_sum'] - product_merged['return_sum']
-        product_merged['sold_percent'] = np.where(product_merged['zakaz_qty']>0, 
-                                                  product_merged['sold_qty'] / product_merged['zakaz_qty'] * 100, 0)
-        product_merged['return_percent'] = np.where(product_merged['zakaz_qty']>0, 
-                                                    product_merged['return_qty'] / product_merged['zakaz_qty'] * 100, 0)
-        
-        st.dataframe(product_merged.style.format({
-            'zakaz_qty':'{:.0f}',
-            'zakaz_sum':'{:.2f}',
-            'sold_qty':'{:.0f}',
-            'sold_sum':'{:.2f}',
-            'return_qty':'{:.0f}',
-            'return_sum':'{:.2f}',
-            'delivered_qty':'{:.0f}',
-            'delivered_sum':'{:.2f}',
-            'sold_percent':'{:.2f}%',
-            'return_percent':'{:.2f}%'
-        }), use_container_width=True)
+        # ==========================
+        # Mahsulot bo‘yicha tahlil
+        # ==========================
+        st.subheader("🛒 Mahsulot bo‘yicha tahlil")
 
-        # -----------------------------
-        # 7️⃣ Mahsulotlar bo'yicha grafiklar
-        # -----------------------------
-        st.subheader("6️⃣ Mahsulotlar bo'yicha grafiklar")
-        
-        fig_products = px.bar(product_merged, x='Номенклатура', y=['zakaz_qty','sold_qty','return_qty'],
-                              barmode='group', title="Zakaz, Sotuv va Qaytish miqdori bo'yicha mahsulotlar")
-        st.plotly_chart(fig_products, use_container_width=True)
+        product_orders = filtered_orders.groupby('Номенклатура')['Количество'].sum().reset_index()
+        product_sales = filtered_sales.groupby('Номенклатура')['Продажная сумма'].sum().reset_index()
+        product_returns = filtered_sales.groupby('Номенклатура')['Возврат сумма'].sum().reset_index()
 
-    except Exception as e:
-        st.error(f"Faylni o'qishda xatolik yuz berdi: {e}")
+        product_summary = product_orders.merge(product_sales, on='Номенклатура', how='left').merge(product_returns, on='Номенклатура', how='left')
+        product_summary = product_summary.fillna(0)
+        product_summary.rename(columns={'Количество':'Zakaz miqdori','Продажная сумма':'Sotilgan summa','Возврат сумма':'Qaytgan summa'}, inplace=True)
+        st.dataframe(product_summary)
 
-else:
-    st.info("Iltimos, ikkita Excel faylni tanlang.")
+        # ==========================
+        # Grafiklar
+        # ==========================
+        st.subheader("📈 Mahsulotlar grafiklari")
+        fig, ax = plt.subplots(figsize=(10,6))
+        sns.barplot(data=product_summary, x='Номенклатура', y='Zakaz miqdori', color='skyblue')
+        plt.xticks(rotation=45, ha='right')
+        plt.title("Mahsulotlar bo‘yicha Zakaz miqdori")
+        st.pyplot(fig)
+
+        fig2, ax2 = plt.subplots(figsize=(10,6))
+        sns.barplot(data=product_summary, x='Номенклатура', y='Sotilgan summa', color='green')
+        plt.xticks(rotation=45, ha='right')
+        plt.title("Mahsulotlar bo‘yicha Sotilgan summa")
+        st.pyplot(fig2)
+
+        fig3, ax3 = plt.subplots(figsize=(10,6))
+        sns.barplot(data=product_summary, x='Номенклатура', y='Qaytgan summa', color='red')
+        plt.xticks(rotation=45, ha='right')
+        plt.title("Mahsulotlar bo‘yicha Qaytgan summa")
+        st.pyplot(fig3)
+
+        # ==========================
+        # Haftalik trendlar
+        # ==========================
+        st.subheader("📆 Haftalik trendlar")
+
+        filtered_orders['weekday'] = filtered_orders['Период'].dt.day_name()
+        filtered_sales['weekday'] = filtered_sales['Период'].dt.day_name()
+
+        weekday_orders = filtered_orders.groupby('weekday')['Количество'].sum().reindex(['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']).fillna(0)
+        weekday_returns = filtered_sales.groupby('weekday')['Возврат количество'].sum().reindex(['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']).fillna(0)
+
+        st.write("Hafta kunlari bo‘yicha Zakazlar:")
+        st.bar_chart(weekday_orders)
+
+        st.write("Hafta kunlari bo‘yicha Qaytishlar:")
+        st.bar_chart(weekday_returns)
